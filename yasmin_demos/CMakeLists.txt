@@ -153,6 +153,12 @@ ament_export_dependencies(${DEPENDENCIES})
 # Python
 ament_python_install_package(${PROJECT_NAME})
 
+install(
+  DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+
 install(PROGRAMS
   yasmin_demos/yasmin_demo.py
   DESTINATION lib/${PROJECT_NAME}
