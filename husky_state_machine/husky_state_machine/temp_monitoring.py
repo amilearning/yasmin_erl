@@ -17,13 +17,15 @@ from yasmin import Blackboard, StateMachine
 from yasmin_ros import MonitorState, set_ros_loggers
 from yasmin_viewer import YasminViewerPub
 from yasmin_ros.yasmin_node import YasminNode
+from std_msgs.msg import Float64MultiArray
+
 # === MonitorState Subclasses ===
 
 class NavToTreeState(MonitorState):
     def __init__(self, goal_x, goal_y) -> None:
         super().__init__(
             Odometry,
-            "/odom",
+            "/a200/robot/gt_odom",
             ["arrived", "moving"],
             self.check_goal_reached,
             msg_queue=10,
@@ -32,15 +34,18 @@ class NavToTreeState(MonitorState):
         self.goal = np.array([goal_x, goal_y])
 
     def check_goal_reached(self, blackboard, msg) -> str:
-        yasmin.YASMIN_LOG_INFO(f"Odometry: {msg.pose.pose.position}")
+        
         pos = msg.pose.pose.position
         current = np.array([pos.x, pos.y])
         dist = np.linalg.norm(current - self.goal)
+        yasmin.YASMIN_LOG_INFO(f"goal: {self.goal}")
+        yasmin.YASMIN_LOG_INFO(f"Odometry: {msg.pose.pose.position} , dist: {dist}")
         return "arrived" if dist < 0.3 else "moving"
 
 
 class MoveArmState(MonitorState):
-    def __init__(self, target_joints) -> None:
+    def __init__(self, target_joints, target_ee, ee_pub) -> None:
+        
         super().__init__(
             JointState,
             "/joint_states",
@@ -50,11 +55,21 @@ class MoveArmState(MonitorState):
             timeout=2.0
         )
         self.target = np.array(target_joints)
+     
+        self.ee_msg = Float64MultiArray()
+        self.ee_msg.data = np.array(target_ee).tolist()
+        self.ee_pub = ee_pub
 
     def check_arm_position(self, blackboard, msg) -> str:
         yasmin.YASMIN_LOG_INFO(f"JointState: {msg.position}")
-        current = np.array(msg.position[:len(self.target)])
-        return "done" if np.allclose(current, self.target, atol=0.05) else "moving"
+        joint_name_pos = dict(zip(msg.name, msg.position))
+        ordered_positions = [joint_name_pos[name] for name in sorted(joint_name_pos.keys()) if name in joint_name_pos]        
+        current = np.array(ordered_positions[:len(self.target)])
+        yasmin.YASMIN_LOG_INFO(f"JointState (sorted): {current}")
+        
+        self.ee_pub.publish(self.ee_msg)
+        
+        return "done" if np.allclose(current, self.target, atol=0.2) else "moving"
 
 
 class CheckTempState(MonitorState):
@@ -72,7 +87,7 @@ class CheckTempState(MonitorState):
     def check_temp(self, blackboard, msg) -> str:
         yasmin.YASMIN_LOG_INFO(f"Temperature: {msg.data}")
         blackboard["last_temp"] = msg.data
-        return "done" if msg.data >= self.threshold else "waiting"
+        return "done" if msg.data % self.threshold == 0 else "waiting"
 
 
 
@@ -88,7 +103,7 @@ class HomeArmState(MoveArmState):
 # === Load Config ===
 
 def load_config():
-    pkg_share = get_package_share_directory("yasmin_demos")
+    pkg_share = get_package_share_directory("husky_state_machine")
     config_path = os.path.join(pkg_share, "config", "mission_config.yaml")
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
@@ -116,6 +131,8 @@ def main():
                     sm.cancel_state()
                     print(1)
     _node.create_subscription(Joy, "/joy", joy_callback, 10)
+    ee_pub = _node.create_publisher(Float64MultiArray, "/cartesian_impedance/pose_desired", 10)    
+
     
     config = load_config()
     sm = StateMachine(outcomes=["done", CANCEL])
@@ -124,21 +141,18 @@ def main():
     blackboard["restart_requested"] = False
 
     goals = config["tree_goals"]
-    arm_positions = config["arm_positions"]
+    # arm_positions = config["arm_positions"]
+    joint_positions = config["joint_positions"]
+    ee_goals = config["arm_ee_goal"]
     threshold = config["temperature_threshold"]
     home_joints = config["home_joint_position"]
 
-
-    # node.create_subscription(
-
-    # === Tree 1 ===
-    
 
     sm.add_state("NAV_TO_TREE_1", NavToTreeState(goals[0]["x"], goals[0]["y"]),
                  transitions={"arrived": "ARM_TO_TREE_1", "moving": "NAV_TO_TREE_1",
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
-    sm.add_state("ARM_TO_TREE_1", MoveArmState(arm_positions[0]),
+    sm.add_state("ARM_TO_TREE_1", MoveArmState(joint_positions[0],ee_goals[0],ee_pub),
                  transitions={"done": "CHECK_TEMP_TREE_1", "moving": "ARM_TO_TREE_1",
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
@@ -151,7 +165,7 @@ def main():
                  transitions={"arrived": "ARM_TO_TREE_2", "moving": "NAV_TO_TREE_2",
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
-    sm.add_state("ARM_TO_TREE_2", MoveArmState(arm_positions[1]),
+    sm.add_state("ARM_TO_TREE_2", MoveArmState(joint_positions[1],ee_goals[1],ee_pub),
                  transitions={"done": "CHECK_TEMP_TREE_2", "moving": "ARM_TO_TREE_2",
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
@@ -164,13 +178,13 @@ def main():
                  transitions={"arrived": "ARM_TO_TREE_3", "moving": "NAV_TO_TREE_3",
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
-    sm.add_state("ARM_TO_TREE_3", MoveArmState(arm_positions[2]),
+    sm.add_state("ARM_TO_TREE_3", MoveArmState(joint_positions[2], ee_goals[2],ee_pub),
                  transitions={"done": "CHECK_TEMP_TREE_3", "moving": "ARM_TO_TREE_3",
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
     sm.add_state("CHECK_TEMP_TREE_3", CheckTempState(threshold),
-                 transitions={"done": "done", "waiting": "CHECK_TEMP_TREE_3",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
+                 transitions={"done": "NAV_TO_TREE_1", "waiting": "CHECK_TEMP_TREE_3",
+                              TIMEOUT: "NAV_TO_TREE_1", CANCEL: CANCEL})
 
     # === HOMING fallback state ===
     # sm.add_state("HOMING", HomeArmState(home_joints),

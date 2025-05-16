@@ -8,7 +8,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Pose, PoseWithCovariance, Twist
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
-
+import random
 
 class MockPublisher(Node):
     def __init__(self):
@@ -20,15 +20,15 @@ class MockPublisher(Node):
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.temp_pub = self.create_publisher(Float32, "/soil_temp", 10)
 
-        self.timer = self.create_timer(0.5, self.publish_all)
+        self.timer = self.create_timer(0.1, self.publish_all)
 
         self.step = 0
         self.joint_pos = [0.0] * 6
         self.temp = 5.0
 
     def publish_all(self):
-        self.publish_odom()
-        self.publish_joints()
+        # self.publish_odom()
+        # self.publish_joints()
         self.publish_temp()
 
     def publish_odom(self):
@@ -63,17 +63,18 @@ class MockPublisher(Node):
         self.joint_pub.publish(msg)
 
     def publish_temp(self):
-        # Simulate increasing soil temperature
-        if self.step < 10:
-            self.temp = 5.0 + 0.5 * self.step
+        # Every 5 seconds (0.1s * 50 steps), publish exactly 15.0
+        if self.step % 30 == 0:
+            self.temp = 10.0
         else:
-            self.temp = 10.5
+            self.temp = random.uniform(10.0, 20.0)
 
         msg = Float32()
         msg.data = self.temp
         self.temp_pub.publish(msg)
 
         self.step += 1
+
 
 
 def main(args=None):
