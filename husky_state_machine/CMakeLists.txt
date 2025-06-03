@@ -44,6 +44,8 @@ find_package(rclpy REQUIRED)
 find_package(yasmin REQUIRED)
 find_package(yasmin_ros REQUIRED)
 find_package(yasmin_viewer REQUIRED)
+
+
 find_package(nav_msgs REQUIRED)
 find_package(example_interfaces REQUIRED)
 
@@ -58,7 +60,7 @@ install(
 
 
 install(PROGRAMS
-  husky_state_machine/temp_monitoring.py
+  husky_state_machine/temp_monitoring.py    
   DESTINATION lib/${PROJECT_NAME}
 )
 
