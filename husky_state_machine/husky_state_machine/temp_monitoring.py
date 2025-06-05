@@ -7,7 +7,7 @@ import rclpy
 
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState, Joy
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32
 
 from ament_index_python.packages import get_package_share_directory
 from yasmin_ros.basic_outcomes import TIMEOUT, CANCEL, SUCCEED
@@ -90,10 +90,27 @@ class CheckTempState(MonitorState):
         return "done" if msg.data % self.threshold == 0 else "waiting"
 
 
+class IdleState(MonitorState):
+    def __init__(self):
+        super().__init__(
+            Int32,
+            "/tree_trigger",
+            ["to_tree_1", "to_tree_2", "to_tree_3", "waiting", "timeout"],
+            self.check_trigger,
+            msg_queue=10,
+            timeout=None  # Wait indefinitely
+        )
+
+    def check_trigger(self, blackboard, msg) -> str:
+        if msg.data == 1:
+            return "to_tree_1"
+        elif msg.data == 2:
+            return "to_tree_2"
+        elif msg.data == 3:
+            return "to_tree_3"
+        return "waiting"
 
 
-        
-        
 class HomeArmState(MoveArmState):
     def check_arm_position(self, blackboard, msg) -> str:
         yasmin.YASMIN_LOG_INFO("⚠️ HOMING: returning to home position...")
@@ -136,6 +153,7 @@ def main():
     
     config = load_config()
     sm = StateMachine(outcomes=["done", CANCEL])
+    
     blackboard = Blackboard()
     blackboard["config"] = config
     blackboard["restart_requested"] = False
@@ -147,6 +165,19 @@ def main():
     threshold = config["temperature_threshold"]
     home_joints = config["home_joint_position"]
 
+    # Add Idle state as the initial state
+    sm.add_state(
+        "IDLE",
+        IdleState(),
+        transitions={
+            "to_tree_1": "NAV_TO_TREE_1",
+            "to_tree_2": "NAV_TO_TREE_2",
+            "to_tree_3": "NAV_TO_TREE_3",
+            "waiting": "IDLE",
+            TIMEOUT: "IDLE",
+            CANCEL: CANCEL
+        }
+    )
 
     sm.add_state("NAV_TO_TREE_1", NavToTreeState(goals[0]["x"], goals[0]["y"]),
                  transitions={"arrived": "ARM_TO_TREE_1", "moving": "NAV_TO_TREE_1",
@@ -157,8 +188,8 @@ def main():
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
     sm.add_state("CHECK_TEMP_TREE_1", CheckTempState(threshold),
-                 transitions={"done": "NAV_TO_TREE_2", "waiting": "CHECK_TEMP_TREE_1",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
+                 transitions={"done": "IDLE", "waiting": "CHECK_TEMP_TREE_1",
+                              TIMEOUT: "IDLE", CANCEL: CANCEL})
 
     # === Tree 2 ===
     sm.add_state("NAV_TO_TREE_2", NavToTreeState(goals[1]["x"], goals[1]["y"]),
@@ -170,8 +201,8 @@ def main():
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
     sm.add_state("CHECK_TEMP_TREE_2", CheckTempState(threshold),
-                 transitions={"done": "NAV_TO_TREE_3", "waiting": "CHECK_TEMP_TREE_2",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
+                 transitions={"done": "IDLE", "waiting": "CHECK_TEMP_TREE_2",
+                              TIMEOUT: "IDLE", CANCEL: CANCEL})
 
     # === Tree 3 ===
     sm.add_state("NAV_TO_TREE_3", NavToTreeState(goals[2]["x"], goals[2]["y"]),
@@ -183,8 +214,8 @@ def main():
                               TIMEOUT: "HOMING", CANCEL: CANCEL})
 
     sm.add_state("CHECK_TEMP_TREE_3", CheckTempState(threshold),
-                 transitions={"done": "NAV_TO_TREE_1", "waiting": "CHECK_TEMP_TREE_3",
-                              TIMEOUT: "NAV_TO_TREE_1", CANCEL: CANCEL})
+                 transitions={"done": "IDLE", "waiting": "CHECK_TEMP_TREE_3",
+                              TIMEOUT: "IDLE", CANCEL: CANCEL})
 
     # === HOMING fallback state ===
     # sm.add_state("HOMING", HomeArmState(home_joints),
@@ -195,9 +226,11 @@ def main():
         "HOMING",
         CbState([SUCCEED], Homing_func),
         transitions={
-            SUCCEED: "NAV_TO_TREE_1",
+            SUCCEED: "IDLE",
         },
     )
+
+    sm.set_start_state("IDLE")
 
 
     YasminViewerPub("soil_temp_fsm_full", sm)
