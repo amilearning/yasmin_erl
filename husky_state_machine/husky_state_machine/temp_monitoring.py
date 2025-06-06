@@ -4,10 +4,12 @@ import os
 import yaml
 import numpy as np
 import rclpy
-
+from std_msgs.msg import Float32, Int32
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState, Joy
 from std_msgs.msg import Float32
+from std_srvs.srv import SetBool
+
 import time 
 from ament_index_python.packages import get_package_share_directory
 from yasmin_ros.basic_outcomes import TIMEOUT, CANCEL, SUCCEED
@@ -40,7 +42,7 @@ class NavToTreeState(MonitorState):
         dist = np.linalg.norm(current - self.goal)
         # yasmin.YASMIN_LOG_INFO(f"goal: {self.goal}")
         # yasmin.YASMIN_LOG_INFO(f"Odometry: {msg.pose.pose.position} , dist: {dist}")
-        yasmin.YASMIN_LOG_INFO(f"No moving, so skipping")
+        # yasmin.YASMIN_LOG_INFO(f"No moving, so skipping")
         # return "arrived" if dist < 0.3 else "moving"
         ''' 
         no moving .. so skipping 
@@ -69,24 +71,22 @@ class MoveArmState(MonitorState):
         # joint_name_pos = dict(zip(msg.name, msg.position))
         # ordered_positions = [joint_name_pos[name] for name in sorted(joint_name_pos.keys()) if name in joint_name_pos]        
         o_t_ee = np.array(msg.o_t_ee).reshape(4, 4).T
-        yasmin.YASMIN_LOG_INFO(f"End-effector transform (o_t_ee):\n{o_t_ee}")
+        # yasmin.YASMIN_LOG_INFO(f"End-effector transform (o_t_ee):\n{o_t_ee}")
         current_position = o_t_ee[:3, 3]  # Extract translation part
-        yasmin.YASMIN_LOG_INFO(f"EE position: {current_position}")
+        # yasmin.YASMIN_LOG_INFO(f"EE position: {current_position}")
         # current = np.array(ordered_positions[:len(self.target)])
         # yasmin.YASMIN_LOG_INFO(f"JointState (sorted): {current}")
         
-        max_step = 0.15
+        max_step = 0.10
         target_position = self.target[:3]
         direction_vector = target_position - current_position
         distance = np.linalg.norm(direction_vector)
         goal_ee_msg = self.ee_msg
         if distance > max_step:
-            corrected_position = current_position + (direction_vector / distance) * max_step
-            # print(corrected_position)
+            corrected_position = current_position + (direction_vector / distance) * max_step            
             goal_ee_msg.data[0] = corrected_position[0]
             goal_ee_msg.data[1] = corrected_position[1]
-            goal_ee_msg.data[2] = corrected_position[2]
-            # goal_ee_msg.data[:3] =  np.array(corrected_position).tolist()
+            goal_ee_msg.data[2] = corrected_position[2]            
             yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. Corrected target: {corrected_position}")
         else:
             yasmin.YASMIN_LOG_INFO("✅ Target within acceptable range.")
@@ -94,7 +94,7 @@ class MoveArmState(MonitorState):
         self.ee_pub.publish(goal_ee_msg)
         
         # return "done" if np.allclose(current, self.target, atol=0.2) else "moving"
-        return "done" if np.allclose(current_position, self.target[:3], atol=0.1) else "moving"
+        return "done" if np.allclose(current_position, self.target[:3], atol=0.15) else "moving"
 
 
 class CheckTempState(MonitorState):
@@ -108,15 +108,82 @@ class CheckTempState(MonitorState):
             timeout=2.0
         )
         self.threshold = threshold
+        self.add_service_timeout = 8.0
+        self.client = YasminNode.get_instance().create_client(SetBool, '/read_soil_sensors')
 
-    def check_temp(self, blackboard, msg) -> str:        
-        blackboard["last_temp"] = msg.data
-        # yasmin.YASMIN_LOG_INFO(f"Temperature: {msg.data}")
-        # return "done" if msg.data % self.threshold == 0 else "waiting"
-        yasmin.YASMIN_LOG_INFO(f"Temperature monitoring skipping")
-        time.sleep(1.0)
-        return "done"
+    def check_temp(self, blackboard, msg) -> str:
+        if not self.client.wait_for_service(timeout_sec=2.0):
+            yasmin.YASMIN_LOG_WARN("Soil sensor service not available. Waiting...")
+            return "waiting"
 
+        request = SetBool.Request()
+        request.data = True  # trigger reading
+
+        # try:
+        #     future = self.client.call(request)  # ✅ synchronous call
+        # except Exception as e:
+        #     yasmin.YASMIN_LOG_WARN(f"⚠️ Service call failed: {str(e)}")
+        #     return "waiting"
+
+        future = self.client.call_async(request)
+
+        # Wait for result (you could also set a timer and break early)
+        start_time = time.time()
+        while rclpy.ok() and not future.done():
+            time_diff = time.time() - start_time
+            if time_diff > self.add_service_timeout:
+                yasmin.YASMIN_LOG_WARN("⏱️ Timeout waiting for soil sensor response. Go back to home.")
+                return "done"
+            else:
+                yasmin.YASMIN_LOG_WARN(f"⏱️ Waiting... elapsed time: {time_diff:.2f} seconds")
+            time.sleep(0.5)
+
+        if future.result() is not None and future.result().success:
+            yasmin.YASMIN_LOG_INFO(f"✅ Soil sensor success: {future.result().message}")
+            return "done"
+        else:
+            yasmin.YASMIN_LOG_WARN(f"⚠️ Soil sensor failed: {future.result().message if future.result() else 'no response'}")
+            return "done"
+
+
+# class CheckTempState(MonitorState):
+#     def __init__(self, threshold) -> None:
+#         super().__init__(
+#             Float32,
+#             "/soil_temp",
+#             ["done", "waiting"],
+#             self.check_temp,
+#             msg_queue=10,
+#             timeout=2.0
+#         )
+#         self.threshold = threshold
+
+#     def check_temp(self, blackboard, msg) -> str:        
+#         blackboard["last_temp"] = msg.data
+#         # yasmin.YASMIN_LOG_INFO(f"Temperature: {msg.data}")
+#         # return "done" if msg.data % self.threshold == 0 else "waiting"
+#         yasmin.YASMIN_LOG_INFO(f"Temperature monitoring skipping")
+#         time.sleep(2.0)
+#         return "done"
+class IdleState(MonitorState):
+    def __init__(self):
+        super().__init__(
+            Int32,
+            "/tree_trigger",
+            ["to_tree_1", "to_tree_2", "to_tree_3", "waiting", "timeout"],
+            self.check_trigger,
+            msg_queue=10,
+            timeout=None  # Wait indefinitely
+        )
+
+    def check_trigger(self, blackboard, msg) -> str:
+        if msg.data == 1:
+            return "to_tree_1"
+        elif msg.data == 2:
+            return "to_tree_2"
+        elif msg.data == 3:
+            return "to_tree_3"
+        return "waiting"
         
 class HomeArmState(MoveArmState):
     def check_arm_position(self, blackboard, msg) -> str:
@@ -168,62 +235,83 @@ def main():
     # arm_positions = config["arm_positions"]
     # joint_positions = config["joint_positions"]
     ee_goals = config["arm_ee_goal"]
+    arm_home_ee = config["arm_home_ee"][0]
     threshold = config["temperature_threshold"]
     home_joints = config["home_joint_position"]
+    sm.add_state(
+        "IDLE",
+        IdleState(),
+        transitions={
+            "to_tree_1": "NAV_TO_TREE_1",
+            "to_tree_2": "NAV_TO_TREE_2",
+            "to_tree_3": "NAV_TO_TREE_3",
+            "waiting": "IDLE",
+            TIMEOUT: "IDLE",
+            CANCEL: CANCEL
+        }
+    )
+    for i in range(len(ee_goals)):
+        tree_num = i + 1
+        next_tree = (i + 1) % len(ee_goals) + 1  # for cycling back to tree 1 after the last
+
+        # Add NAV_TO_TREE_i
+        sm.add_state(
+            f"NAV_TO_TREE_{tree_num}",
+            NavToTreeState(goals[0]["x"], goals[0]["y"]),
+            transitions={
+                "arrived": f"ARM_TO_TREE_{tree_num}",
+                "moving": f"NAV_TO_TREE_{tree_num}",
+                TIMEOUT: "HOMING",
+                CANCEL: CANCEL
+            }
+        )
+
+        # Add ARM_TO_TREE_i
+        sm.add_state(
+            f"ARM_TO_TREE_{tree_num}",
+            MoveArmState(ee_goals[i], ee_pub),
+            transitions={
+                "done": f"CHECK_TEMP_TREE_{tree_num}",
+                "moving": f"ARM_TO_TREE_{tree_num}",
+                TIMEOUT: "HOMING",
+                CANCEL: CANCEL
+            }
+        )
+
+        # Add CHECK_TEMP_TREE_i
+        # For the last tree, go back to NAV_TO_TREE_1 or customize as needed
+        # next_state = f"NAV_TO_TREE_{next_tree}" if i < len(ee_goals) - 1 else "NAV_TO_TREE_1"
+       
+        sm.add_state(
+            f"CHECK_TEMP_TREE_{tree_num}",
+            CheckTempState(threshold),
+            transitions={
+                "done": f"HOMING",
+                "waiting": f"CHECK_TEMP_TREE_{tree_num}",
+                TIMEOUT: "HOMING" if i == len(ee_goals) - 1 else "HOMING",
+                CANCEL: CANCEL
+            }
+        )
 
 
-    sm.add_state("NAV_TO_TREE_1", NavToTreeState(goals[0]["x"], goals[0]["y"]),
-                 transitions={"arrived": "ARM_TO_TREE_1", "moving": "NAV_TO_TREE_1",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
+    
 
-    sm.add_state("ARM_TO_TREE_1", MoveArmState(ee_goals[0],ee_pub),
-                 transitions={"done": "CHECK_TEMP_TREE_1", "moving": "ARM_TO_TREE_1",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    sm.add_state("CHECK_TEMP_TREE_1", CheckTempState(threshold),
-                 transitions={"done": "NAV_TO_TREE_2", "waiting": "CHECK_TEMP_TREE_1",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    # === Tree 2 ===
-    sm.add_state("NAV_TO_TREE_2", NavToTreeState(goals[1]["x"], goals[1]["y"]),
-                 transitions={"arrived": "ARM_TO_TREE_2", "moving": "NAV_TO_TREE_2",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    sm.add_state("ARM_TO_TREE_2", MoveArmState(ee_goals[1],ee_pub),
-                 transitions={"done": "CHECK_TEMP_TREE_2", "moving": "ARM_TO_TREE_2",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    sm.add_state("CHECK_TEMP_TREE_2", CheckTempState(threshold),
-                 transitions={"done": "NAV_TO_TREE_3", "waiting": "CHECK_TEMP_TREE_2",
-                            #   TIMEOUT: "NAV_TO_TREE_1", CANCEL: CANCEL})
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    # === Tree 3 ===
-    sm.add_state("NAV_TO_TREE_3", NavToTreeState(goals[2]["x"], goals[2]["y"]),
-                 transitions={"arrived": "ARM_TO_TREE_3", "moving": "NAV_TO_TREE_3",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    sm.add_state("ARM_TO_TREE_3", MoveArmState(ee_goals[2],ee_pub),
-                 transitions={"done": "CHECK_TEMP_TREE_3", "moving": "ARM_TO_TREE_3",
-                              TIMEOUT: "HOMING", CANCEL: CANCEL})
-
-    sm.add_state("CHECK_TEMP_TREE_3", CheckTempState(threshold),
-                 transitions={"done": "NAV_TO_TREE_1", "waiting": "CHECK_TEMP_TREE_3",
-                              TIMEOUT: "NAV_TO_TREE_1", CANCEL: CANCEL})
-
+    sm.add_state(
+        f"HOMING",
+        MoveArmState(arm_home_ee, ee_pub),
+        transitions={
+            "done": f"IDLE",
+            "moving": f"HOMING",
+            TIMEOUT: "HOMING",
+            CANCEL: CANCEL
+        }
+    )
     # === HOMING fallback state ===
     # sm.add_state("HOMING", HomeArmState(home_joints),
     #              transitions={"done": "aborted", "moving": "aborted"})
 
         
-    sm.add_state(
-        "HOMING",
-        CbState([SUCCEED], Homing_func),
-        transitions={
-            SUCCEED: "NAV_TO_TREE_1",
-        },
-    )
-
+    sm.set_start_state("HOMING")
 
     YasminViewerPub("soil_temp_fsm_full", sm)
 

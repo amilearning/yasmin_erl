@@ -61,6 +61,7 @@ install(
 
 install(PROGRAMS
   husky_state_machine/temp_monitoring.py    
+  husky_state_machine/bf_tree.py    
   DESTINATION lib/${PROJECT_NAME}
 )
 
