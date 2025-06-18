@@ -44,6 +44,7 @@ find_package(rclpy REQUIRED)
 find_package(yasmin REQUIRED)
 find_package(yasmin_ros REQUIRED)
 find_package(yasmin_viewer REQUIRED)
+find_package(franka_msgs REQUIRED)
 
 
 find_package(nav_msgs REQUIRED)

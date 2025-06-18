@@ -21,6 +21,7 @@ from yasmin_viewer import YasminViewerPub
 from yasmin_ros.yasmin_node import YasminNode
 from std_msgs.msg import Float64MultiArray
 from franka_msgs.msg import FrankaState
+from franka_msgs.srv import SetFullCollisionBehavior
 # === MonitorState Subclasses ===
 
 class NavToTreeState(MonitorState):
@@ -65,6 +66,7 @@ class MoveArmState(MonitorState):
         self.ee_msg = Float64MultiArray()
         self.ee_msg.data = np.array(target_ee).tolist()
         self.ee_pub = ee_pub
+        self.arm_cmd_timeout = 5.0
 
     def check_arm_position(self, blackboard, msg) -> str:
         # yasmin.YASMIN_LOG_INFO(f"JointState: {msg.position}")
@@ -77,31 +79,62 @@ class MoveArmState(MonitorState):
         # current = np.array(ordered_positions[:len(self.target)])
         # yasmin.YASMIN_LOG_INFO(f"JointState (sorted): {current}")
         
-        max_step = 0.10
+        
+        max_step = 0.2
+        
         target_position = self.target[:3]
         direction_vector = target_position - current_position
         distance = np.linalg.norm(direction_vector)
-        goal_ee_msg = self.ee_msg
-        if distance > max_step:
+        ee_msg = Float64MultiArray()
+        ee_msg.data = self.ee_msg.data
+        goal_ee_msg = ee_msg
+        if distance > 0.2:            
             corrected_position = current_position + (direction_vector / distance) * max_step            
             goal_ee_msg.data[0] = corrected_position[0]
             goal_ee_msg.data[1] = corrected_position[1]
-            goal_ee_msg.data[2] = corrected_position[2]            
+            goal_ee_msg.data[2] = corrected_position[2]     
+            yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. max_step: {max_step}")
             yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. Corrected target: {corrected_position}")
-        else:
-            yasmin.YASMIN_LOG_INFO("✅ Target within acceptable range.")
+            yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. distance: {distance}")            
+        # else:        
+        #      yasmin.YASMIN_LOG_INFO("✅ Target within acceptable range.")
+        # elif distance > 0.2 and distance <= 0.5:
+        #     max_step = 0.10
+        
+        #     corrected_position = current_position + (direction_vector / distance) * max_step            
+        #     goal_ee_msg.data[0] = corrected_position[0]
+        #     goal_ee_msg.data[1] = corrected_position[1]
+        #     goal_ee_msg.data[2] = corrected_position[2]     
 
+        else:
+            goal_ee_msg.data[0] = self.target[0]
+            goal_ee_msg.data[1] = self.target[1]
+            goal_ee_msg.data[2] = self.target[2]
+        
         self.ee_pub.publish(goal_ee_msg)
         
+        distance_vector = self.target[:3] - current_position
+        distance_eval = np.linalg.norm(distance_vector)
+        yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. max_step: {max_step}")                
+        yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. distance: {distance}")
+        yasmin.YASMIN_LOG_INFO(f"⚠️ Target too far. distance_eval: {distance_eval}")
+        yasmin.YASMIN_LOG_INFO(f"⚠️ Target 0: {goal_ee_msg.data[:3]}")
+        
+        if distance_eval < 0.15:
+            return "done"
+        else:
+            return "moving"
+            
+        
         # return "done" if np.allclose(current, self.target, atol=0.2) else "moving"
-        return "done" if np.allclose(current_position, self.target[:3], atol=0.15) else "moving"
+        # return "done" if np.allclose(current_position, self.target[:3], atol=0.1) else "moving"
 
 
 class CheckTempState(MonitorState):
     def __init__(self, threshold) -> None:
         super().__init__(
-            Float32,
-            "/soil_temp",
+            Odometry,
+            "/dlio/odom_node/odom",
             ["done", "waiting"],
             self.check_temp,
             msg_queue=10,
@@ -177,6 +210,8 @@ class IdleState(MonitorState):
         )
 
     def check_trigger(self, blackboard, msg) -> str:
+        if 'max_step' not in blackboard:        
+            blackboard['max_step'] = 0.05
         if msg.data == 1:
             return "to_tree_1"
         elif msg.data == 2:
@@ -209,6 +244,9 @@ def Homing_func(blackboard: Blackboard) -> str:
 def main():
     yasmin.YASMIN_LOG_INFO("🌳 Starting Full Soil Temp FSM with HOMING fallback")
 
+    
+    
+
     rclpy.init()
     set_ros_loggers()       
     # _node = rclpy.create_node("soil_temp_fsm_node")
@@ -218,16 +256,60 @@ def main():
             yasmin.YASMIN_LOG_INFO("🛑 Joy button pressed. Cancelling FSM and restarting...")
             if not blackboard["restart_requested"]:
                 blackboard["restart_requested"] = True
-                if sm.is_running():
-                    sm.cancel_state()
+                # if sm.is_running():
+                #     sm.cancel_state()
                     
     _node.create_subscription(Joy, "/joy", joy_callback, 10)
     ee_pub = _node.create_publisher(Float64MultiArray, "/cartesian_impedance/pose_desired", 10)    
+
+
+    arm_config_cli = _node.create_client(
+            SetFullCollisionBehavior,
+            '/franka/panda_param_service_server/set_full_collision_behavior'
+        )
+  
+    # Wait for the service to be available
+    while not arm_config_cli.wait_for_service(timeout_sec=1.0):        
+        yasmin.YASMIN_LOG_INFO("Waiting for set_full_collision_behavior service...")
+    
+    def response_callback(future):        
+        yasmin.YASMIN_LOG_INFO("Service callback started...")
+        try:
+            response = future.result()
+            if response.success:                
+                yasmin.YASMIN_LOG_INFO("✅ Successfully set collision behavior: Robot is free!")
+            else:
+                yasmin.YASMIN_LOG_INFO(f"❌ Failed to set collision behavior: {response.error}")                
+        except Exception as e:            
+            yasmin.YASMIN_LOG_INFO("f'Service call failed: {str(e)}'")
+        finally:
+            req_done = True  
+
+    
+    def send_request():
+        request = SetFullCollisionBehavior.Request()
+
+        # Set very large thresholds to "free" the robot
+        request.lower_torque_thresholds_acceleration = [-10000.0] * 7
+        request.upper_torque_thresholds_acceleration = [10000.0] * 7
+        request.lower_torque_thresholds_nominal = [-10000.0] * 7
+        request.upper_torque_thresholds_nominal = [10000.0] * 7
+        request.lower_force_thresholds_acceleration = [-5000.0] * 6
+        request.upper_force_thresholds_acceleration = [5000.0] * 6
+        request.lower_force_thresholds_nominal = [-5000.0] * 6
+        request.upper_force_thresholds_nominal = [5000.0] * 6
+
+        yasmin.YASMIN_LOG_INFO("Sending collision behavior request...")
+        future = arm_config_cli.call_async(request)
+        future.add_done_callback(response_callback)
+
+    send_request()
 
     
     config = load_config()
     sm = StateMachine(outcomes=["done", CANCEL])
     blackboard = Blackboard()
+    blackboard['max_step'] = 0.1
     blackboard["config"] = config
     blackboard["restart_requested"] = False
 
@@ -287,7 +369,8 @@ def main():
             CheckTempState(threshold),
             transitions={
                 "done": f"HOMING",
-                "waiting": f"CHECK_TEMP_TREE_{tree_num}",
+                # "waiting": f"CHECK_TEMP_TREE_{tree_num}",
+                "waiting": f"HOMING",
                 TIMEOUT: "HOMING" if i == len(ee_goals) - 1 else "HOMING",
                 CANCEL: CANCEL
             }
