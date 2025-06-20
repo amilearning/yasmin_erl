@@ -34,24 +34,40 @@ class NavToTreeState(MonitorState):
             msg_queue=10,
             timeout=2.0
         )
-        self.goal = np.array([0.0, 0.0])
+        self.add_service_timeout = 5.0
+        self.client = YasminNode.get_instance().create_client(SetBool, "/move_husky")
 
     def check_goal_reached(self, blackboard, msg) -> str:
-        if blackboard["tree_num"] ==1:
-            print(1)
-
+        goal = 0.0
         pos = msg.pose.pose.position
-        current = np.array([pos.x, pos.y])
-        dist = np.linalg.norm(current - self.goal)
-        # yasmin.YASMIN_LOG_INFO(f"goal: {self.goal}")
-        # yasmin.YASMIN_LOG_INFO(f"Odometry: {msg.pose.pose.position} , dist: {dist}")
-        # yasmin.YASMIN_LOG_INFO(f"No moving, so skipping")
-        # return "arrived" if dist < 0.3 else "moving"
-        ''' 
-        no moving .. so skipping 
-        '''
-        return "arrived"
+        if blackboard["tree_num"] ==1 or blackboard["tree_num"] ==2:
+            request = SetBool.Request()
+            request.data = True  # or False depending on logic
+            future = self.client.call_async(request)
+            goal = 0.3
+        elif blackboard["tree_num"] ==3:
+            request = SetBool.Request()
+            request.data = False  # or False depending on logic
+            future = self.client.call_async(request)
+            goal = 0.0
+        
 
+        start_time = time.time()
+        while rclpy.ok() and not future.done():
+            time_diff = time.time() - start_time
+            if time_diff > self.add_service_timeout:
+                yasmin.YASMIN_LOG_WARN("⏱️ Timeout waiting for Movin response. Go back to home.")
+                return "moving"
+            else:
+                yasmin.YASMIN_LOG_WARN(f"⏱️ Waiting... elapsed time: {time_diff:.2f} seconds")
+            time.sleep(0.5)
+
+
+        dist = abs(pos.x - goal)
+        if dist < 0.04:
+            return "arrived"
+        else:
+            return "moving"
 
 
 class HOMINGState(MonitorState):
@@ -263,15 +279,15 @@ def main():
     set_ros_loggers()       
     # _node = rclpy.create_node("soil_temp_fsm_node")
     _node = YasminNode.get_instance()        
-    def joy_callback(msg):
-        if any(msg.buttons):
-            yasmin.YASMIN_LOG_INFO("🛑 Joy button pressed. Cancelling FSM and restarting...")
+    # def joy_callback(msg):
+    #     if any(msg.buttons):
+    #         yasmin.YASMIN_LOG_INFO("🛑 Joy button pressed. Cancelling FSM and restarting...")
             # if not blackboard["restart_requested"]:
             #     blackboard["restart_requested"] = True
                 # if sm.is_running():
                 #     sm.cancel_state()
                     
-    _node.create_subscription(Joy, "/joy", joy_callback, 10)
+    # _node.create_subscription(Joy, "/joy", joy_callback, 10)
     ee_pub = _node.create_publisher(Float64MultiArray, "/cartesian_impedance/pose_desired", 10)    
 
 
