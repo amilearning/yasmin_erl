@@ -28,7 +28,7 @@ class Viewer extends React.Component {
       current_fsm: "ALL",
       hide_nested_fsm: false,
       show_only_active_fsms: false,
-      layout: "dagre",
+      layout: "grid",
     };
 
     this.handle_current_fsm = this.handle_current_fsm.bind(this);
@@ -117,6 +117,15 @@ class Viewer extends React.Component {
           handle_change_layout={this.handle_change_layout}
         />
 
+        {/* <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-start", // align left
+            alignItems: "flex-start",     // align top
+            height: "100vh",
+            width: "100vw",
+          }}
+        > */}
         <div
           style={{
             display: "flex",
@@ -137,7 +146,8 @@ class Viewer extends React.Component {
                 return (
                   <Grid
                     item
-                    xs={this.state.current_fsm === "ALL" ? 6 : 12}
+                    // xs={this.state.current_fsm === "ALL" ? 12 : 12}
+                    xs={3}
                     key={
                       fsm[0].name +
                       this.state.current_fsm +

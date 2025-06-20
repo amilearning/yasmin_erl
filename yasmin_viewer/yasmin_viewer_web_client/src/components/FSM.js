@@ -49,7 +49,7 @@ const Graph = React.memo(({ nodes, edges, layout, height }) => {
           style: {
             label: "data(label)",
             borderColor: "black",
-            borderWidth: 2,
+            borderWidth: 1,
             textValign: "center",
             textHalign: "center",
             fontSize: 15,
@@ -100,7 +100,7 @@ const Graph = React.memo(({ nodes, edges, layout, height }) => {
         {
           selector: "edge",
           style: {
-            label: "data(label)",
+            // label: "data(label)",
             targetArrowShape: "triangle",
             curveStyle: "bezier",
             controlPointDistances: [30, -30],
@@ -125,15 +125,7 @@ const Graph = React.memo(({ nodes, edges, layout, height }) => {
 
 const FSM = React.memo(({ fsm_data, alone, hide_nested_fsm, layout_type }) => {
   const layouts = {
-    dagre: {
-      name: "dagre",
-      nodeSep: 50,
-      edgeSep: 25,
-      rankSep: 100,
-      rankDir: "TB",
-      align: "UL",
-    },
-    grid: {
+      grid: {
       name: "grid",
       rows: undefined, // Automatically calculate rows
       cols: undefined, // Automatically calculate columns
@@ -142,6 +134,14 @@ const FSM = React.memo(({ fsm_data, alone, hide_nested_fsm, layout_type }) => {
         col: node.data("col"),
       }),
       avoidOverlap: true,
+    },
+    dagre: {
+      name: "dagre",
+      nodeSep: 50,
+      edgeSep: 25,
+      rankSep: 100,
+      rankDir: "TB",
+      align: "UL",
     },
     circle: {
       name: "circle",
