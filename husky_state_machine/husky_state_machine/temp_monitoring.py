@@ -200,7 +200,7 @@ def main():
     )
 
 
-    YasminViewerPub("soil_temp_fsm_full", sm)
+    YasminViewerPub(" ", sm)
 
     # try:
     result = sm()

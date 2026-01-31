@@ -75,7 +75,7 @@ export default function TopAppBar({
     <Box sx={{ flexGrow: 1 }} style={{ width: "100%", height: "6.75vh" }}>
       <AppBar style={{ margin: 0 }}>
         <Toolbar
-          sx={{ bgcolor: "#1e88e5", minHeight: 80, height: 80 }}
+          sx={{ bgcolor: "black", minHeight: 80, height: 80 }}
           variant="dense"
           disableGutters
         >
@@ -92,7 +92,7 @@ export default function TopAppBar({
               textDecoration: "none",
             }}
           >
-            YASMIN Viewer
+            TUM MIRMI
           </Typography>
 
           <Divider
